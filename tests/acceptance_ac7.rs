@@ -11,12 +11,33 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use daily_receipt::render;
+
+fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
 
 #[test]
 fn acceptance_ac7() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC7 not yet implemented — see file header");
+    // Date is embedded across all three day-types.
+    let needle = b"2026-05-23";
+
+    let bytes = render(&common::workday_summary(), &common::haiku_content()).expect("workday");
+    assert!(contains_subslice(&bytes, needle), "workday output missing date bytes");
+
+    let bytes = render(&common::quiet_summary(), &common::glyph_content(1)).expect("quiet");
+    assert!(contains_subslice(&bytes, needle), "quiet output missing date bytes");
+
+    let bytes = render(&common::special_summary(), &common::stamp_content("birthday")).expect("special");
+    assert!(contains_subslice(&bytes, needle), "special output missing date bytes");
+
+    // Other dates work too.
+    let mut s2 = common::workday_summary();
+    s2.date = "1999-12-31".into();
+    let bytes = render(&s2, &common::haiku_content()).expect("y2k");
+    assert!(contains_subslice(&bytes, b"1999-12-31"));
 }

@@ -11,12 +11,55 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use std::process::Command;
+
+use daily_receipt::{Content, render};
 
 #[test]
 fn acceptance_ac5() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC5 not yet implemented — see file header");
+    // Empty line -> HaikuShape (exit code 3).
+    let bad = Content::Haiku {
+        lines: ["".into(), "ok".into(), "ok".into()],
+    };
+    let err = render(&common::workday_summary(), &bad).unwrap_err();
+    assert_eq!(err.exit_code(), 3, "empty line should be exit 3");
+
+    // Overlong line (>40 chars) -> HaikuShape.
+    let bad = Content::Haiku {
+        lines: [
+            "x".repeat(41),
+            "ok line two".into(),
+            "ok line three".into(),
+        ],
+    };
+    let err = render(&common::workday_summary(), &bad).unwrap_err();
+    assert_eq!(err.exit_code(), 3, "overlong line should be exit 3");
+
+    // Wrong shape for day-type — workday with glyph content -> ContentShape (exit 3).
+    let err = render(&common::workday_summary(), &common::glyph_content(1)).unwrap_err();
+    assert_eq!(err.exit_code(), 3, "workday + glyph should be exit 3");
+
+    // Now drive the CLI to confirm the exit code actually surfaces.
+    let dir = common::tmp_dir("ac5");
+    let summary_path = common::write_json(&dir, "summary.json", &common::workday_summary());
+    let bad_content = Content::Haiku {
+        lines: ["".into(), "ok".into(), "ok".into()],
+    };
+    let content_path = common::write_json(&dir, "content.json", &bad_content);
+    let out_path = dir.join("strip.escpos");
+    let status = Command::new(common::cli_bin())
+        .arg("render")
+        .arg("--summary")
+        .arg(&summary_path)
+        .arg("--content")
+        .arg(&content_path)
+        .arg("--out")
+        .arg(&out_path)
+        .status()
+        .expect("spawn cli");
+    assert_eq!(status.code(), Some(3), "cli should exit 3 on haiku shape error");
 }

@@ -11,12 +11,31 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use daily_receipt::render;
 
 #[test]
 fn acceptance_ac2() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC2 not yet implemented — see file header");
+    // Workday haiku strip.
+    let bytes = render(&common::workday_summary(), &common::haiku_content()).expect("render workday");
+    assert_eq!(&bytes[..2], &[0x1B, 0x40], "ESC @ init prefix missing");
+    assert_eq!(
+        &bytes[bytes.len() - 4..],
+        &[0x1D, 0x56, 0x42, 0x00],
+        "GS V B 0 feed-and-cut suffix missing"
+    );
+
+    // Quiet glyph strip.
+    let bytes = render(&common::quiet_summary(), &common::glyph_content(42)).expect("render quiet");
+    assert_eq!(&bytes[..2], &[0x1B, 0x40]);
+    assert_eq!(&bytes[bytes.len() - 4..], &[0x1D, 0x56, 0x42, 0x00]);
+
+    // Special stamp strip.
+    let bytes =
+        render(&common::special_summary(), &common::stamp_content("birthday")).expect("render special");
+    assert_eq!(&bytes[..2], &[0x1B, 0x40]);
+    assert_eq!(&bytes[bytes.len() - 4..], &[0x1D, 0x56, 0x42, 0x00]);
 }

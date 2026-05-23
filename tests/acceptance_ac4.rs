@@ -11,12 +11,72 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use daily_receipt::{DayType, DaySummary, classify};
+
+fn s(date: &str, repos: &[&str], commits: usize, stamp: Option<&str>) -> DaySummary {
+    DaySummary {
+        date: date.into(),
+        repos: repos.iter().map(|r| (*r).to_string()).collect(),
+        commits: (0..commits).map(|i| format!("c{i}")).collect(),
+        special_stamp_id: stamp.map(str::to_owned),
+        journal_note: None,
+    }
+}
 
 #[test]
 fn acceptance_ac4() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC4 not yet implemented — see file header");
+    let _ = common::cli_bin; // suppress unused-module clippy noise
+
+    // special stamp wins, even with low activity
+    assert_eq!(
+        classify(&s("2026-05-23", &[], 0, Some("birthday"))),
+        DayType::Special
+    );
+    // special stamp wins, even with high activity
+    assert_eq!(
+        classify(&s("2026-05-23", &["a", "b", "c"], 99, Some("anniversary"))),
+        DayType::Special
+    );
+
+    // workday by repo breadth (3 distinct)
+    assert_eq!(
+        classify(&s("2026-05-23", &["a", "b", "c"], 1, None)),
+        DayType::Workday
+    );
+    // not workday with only 2 distinct repos and <10 commits
+    assert_eq!(
+        classify(&s("2026-05-23", &["a", "b", "a"], 9, None)),
+        DayType::Quiet
+    );
+    // workday by commit depth (>=10)
+    assert_eq!(
+        classify(&s("2026-05-23", &["a"], 10, None)),
+        DayType::Workday
+    );
+    // <10 commits, <3 repos -> quiet
+    assert_eq!(
+        classify(&s("2026-05-23", &["a"], 9, None)),
+        DayType::Quiet
+    );
+    // empty -> quiet
+    assert_eq!(classify(&s("2026-05-23", &[], 0, None)), DayType::Quiet);
+
+    // Exhaustiveness: pattern-match must cover the three variants and
+    // nothing else. The match below would fail to compile if a fourth
+    // variant were added without touching this test, which is the
+    // structural guarantee AC4 names.
+    let outcomes = [
+        DayType::Workday,
+        DayType::Quiet,
+        DayType::Special,
+    ];
+    for o in outcomes {
+        match o {
+            DayType::Workday | DayType::Quiet | DayType::Special => {}
+        }
+    }
 }

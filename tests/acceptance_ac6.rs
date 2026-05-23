@@ -11,12 +11,54 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use std::collections::HashSet;
+
+use daily_receipt::render;
 
 #[test]
 fn acceptance_ac6() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC6 not yet implemented — see file header");
+    // Same seed -> identical bytes.
+    let s = common::quiet_summary();
+    let a = render(&s, &common::glyph_content(0xCAFE_F00D)).expect("a");
+    let b = render(&s, &common::glyph_content(0xCAFE_F00D)).expect("b");
+    assert_eq!(a, b, "same seed should yield identical bytes");
+
+    // Different seeds -> different bitmaps. We look at the raster image
+    // payload (after the GS '*' nx ny header) to avoid the date/init/cut
+    // common prefix dominating the comparison.
+    let mut bitmaps: HashSet<Vec<u8>> = HashSet::new();
+    let n = 100u64;
+    let mut collisions = 0u64;
+    for seed in 0..n {
+        let bytes = render(&s, &common::glyph_content(seed)).expect("render glyph");
+        // Find GS '*' nx ny — the first occurrence of 0x1D 0x2A.
+        let idx = bytes
+            .windows(2)
+            .position(|w| w == [0x1D, 0x2A])
+            .expect("GS * header must be present in glyph output");
+        let start = idx + 4; // skip 0x1D 0x2A nx ny
+        let payload_len = 72; // 24x24 = 3 bytes wide * 24 rows.
+        let payload = bytes[start..start + payload_len].to_vec();
+        if !bitmaps.insert(payload) {
+            collisions += 1;
+        }
+    }
+    // AC6 caps collision probability < 5% on 100-seed sample.
+    assert!(
+        collisions * 20 < n,
+        "too many bitmap collisions: {collisions}/{n}"
+    );
+
+    // Sanity check the encoding header is correct: nx=3, ny=3.
+    let bytes = render(&s, &common::glyph_content(0)).expect("render0");
+    let idx = bytes
+        .windows(2)
+        .position(|w| w == [0x1D, 0x2A])
+        .expect("GS * header");
+    assert_eq!(bytes[idx + 2], 3, "nx (bytes/row) must be 3");
+    assert_eq!(bytes[idx + 3], 3, "ny (8-dot rows) must be 3");
 }

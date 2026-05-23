@@ -11,12 +11,46 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use std::process::Command;
+
+use daily_receipt::{known_stamp_ids, render};
 
 #[test]
 fn acceptance_ac8() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC8 not yet implemented — see file header");
+    // Known stamp -> renders cleanly.
+    let bytes = render(&common::special_summary(), &common::stamp_content("birthday")).expect("birthday");
+    assert!(!bytes.is_empty());
+    // Some recognizable stamp text bytes appear in output.
+    let any_marker = bytes
+        .windows(b"HAPPY".len())
+        .any(|w| w == b"HAPPY");
+    assert!(any_marker, "birthday stamp text not embedded");
+
+    // Sanity: at least one stamp is registered.
+    assert!(!known_stamp_ids().is_empty());
+
+    // Unknown stamp -> UnknownStamp -> exit 4.
+    let err = render(&common::special_summary(), &common::stamp_content("nope-no-such-stamp")).unwrap_err();
+    assert_eq!(err.exit_code(), 4);
+
+    // Drive the CLI to confirm exit code 4 surfaces.
+    let dir = common::tmp_dir("ac8");
+    let summary_path = common::write_json(&dir, "summary.json", &common::special_summary());
+    let content_path = common::write_json(&dir, "content.json", &common::stamp_content("nope-no-such-stamp"));
+    let out_path = dir.join("strip.escpos");
+    let status = Command::new(common::cli_bin())
+        .arg("render")
+        .arg("--summary")
+        .arg(&summary_path)
+        .arg("--content")
+        .arg(&content_path)
+        .arg("--out")
+        .arg(&out_path)
+        .status()
+        .expect("spawn cli");
+    assert_eq!(status.code(), Some(4), "cli must exit 4 on unknown stamp");
 }

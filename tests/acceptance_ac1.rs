@@ -11,12 +11,33 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use std::process::Command;
 
 #[test]
 fn acceptance_ac1() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC1 not yet implemented — see file header");
+    let dir = common::tmp_dir("ac1");
+    let summary = common::workday_summary();
+    let content = common::haiku_content();
+    let summary_path = common::write_json(&dir, "summary.json", &summary);
+    let content_path = common::write_json(&dir, "content.json", &content);
+    let out_path = dir.join("strip.escpos");
+
+    let status = Command::new(common::cli_bin())
+        .arg("render")
+        .arg("--summary")
+        .arg(&summary_path)
+        .arg("--content")
+        .arg(&content_path)
+        .arg("--out")
+        .arg(&out_path)
+        .status()
+        .expect("spawn cli");
+
+    assert!(status.success(), "expected exit 0, got {status:?}");
+    let bytes = std::fs::read(&out_path).expect("read output");
+    assert!(!bytes.is_empty(), "expected non-empty ESC/POS bytes");
 }

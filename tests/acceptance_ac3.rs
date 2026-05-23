@@ -11,12 +11,29 @@
 //! the panic stub with a real assertion that verifies the AC
 //! description above.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown, clippy::indexing_slicing, clippy::manual_string_new, clippy::missing_panics_doc)]
+
+mod common;
+
+use daily_receipt::render;
 
 #[test]
 fn acceptance_ac3() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC3 not yet implemented — see file header");
+    let summary = common::workday_summary();
+    let content = common::haiku_content();
+    let a = render(&summary, &content).expect("render a");
+    let b = render(&summary, &content).expect("render b");
+    assert_eq!(a, b, "workday render is not deterministic");
+
+    let summary = common::quiet_summary();
+    let content = common::glyph_content(0xDEAD_BEEF);
+    let a = render(&summary, &content).expect("render glyph a");
+    let b = render(&summary, &content).expect("render glyph b");
+    assert_eq!(a, b, "quiet glyph render is not deterministic");
+
+    let summary = common::special_summary();
+    let content = common::stamp_content("birthday");
+    let a = render(&summary, &content).expect("render stamp a");
+    let b = render(&summary, &content).expect("render stamp b");
+    assert_eq!(a, b, "special stamp render is not deterministic");
 }
