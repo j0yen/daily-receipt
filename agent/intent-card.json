@@ -1,0 +1,136 @@
+{
+  "schema": "autobuilder.intent_card.v1",
+  "prd_source": "/home/jsy/projects/autobuilder/PRD-daily-receipt.md",
+  "root_motivation": "Produce a deterministic, falsifiable Rust core for the Daily Receipt art project: given a day's structured summary plus a chosen day-type (workday | quiet | special) plus the content payload supplied by upstream (a haiku triple, a glyph seed, or a stamp id), emit a byte-stable ESC/POS command stream for one ~3-8cm thermal strip. Physical printing, scheduling, and Claude-API haiku generation are EXPLICITLY out of scope; the testable core is the encoder + day-type classifier + glyph renderer that downstream cron/printer wrappers consume. This isolates the failure-prone surface (ESC/POS byte sequences, classifier heuristics, glyph determinism) from the unfalsifiable surface (does this haiku spark joy).",
+  "user_persona": "jsy on Arch Linux runs `daily-receipt render --summary day.json --content content.json --out strip.escpos`. Downstream a tiny shell wrapper pipes the file to /dev/usb/lp0 or saves it for the day. The Rust core never touches the printer; downstream wrappers and a future `daily-receipt-printer` crate own that.",
+  "unfakeable_metric": {
+    "name": "acceptance_tests_passing_count",
+    "lower_is_better": false,
+    "harness_command": "scripts/run-metrics.sh",
+    "target": 7
+  },
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "level": "MUST",
+      "description": "`daily-receipt render --summary <day.json> --content <content.json> --out <path>` writes a non-empty ESC/POS byte stream to <path> for a workday haiku input and exits 0.",
+      "test": "tests/acceptance_ac1.rs"
+    },
+    {
+      "id": "AC2",
+      "level": "MUST",
+      "description": "Output bytes begin with the ESC/POS init sequence ESC '@' (0x1B 0x40) and end with a feed-and-cut sequence (GS V 0x42 0x00 = 0x1D 0x56 0x42 0x00). This is the printer-handshake contract every strip must honor.",
+      "test": "tests/acceptance_ac2.rs"
+    },
+    {
+      "id": "AC3",
+      "level": "MUST",
+      "description": "Rendering is deterministic: two `render` invocations with byte-identical summary+content JSON produce byte-identical ESC/POS output (no timestamps, no RNG, no map iteration order leaking in).",
+      "test": "tests/acceptance_ac3.rs"
+    },
+    {
+      "id": "AC4",
+      "level": "MUST",
+      "description": "Day-type classifier `classify` returns `workday` when summary has >=3 distinct repos OR >=10 commits, `special` when summary.special_stamp_id is set, and `quiet` otherwise. Exhaustive on the three variants; no fourth bucket.",
+      "test": "tests/acceptance_ac4.rs"
+    },
+    {
+      "id": "AC5",
+      "level": "MUST",
+      "description": "Haiku content must be exactly three lines, each line 1..=40 visible chars. `render` returns an error (exit code 3) when the content payload has the wrong shape for the day-type. No silent truncation, no panic.",
+      "test": "tests/acceptance_ac5.rs"
+    },
+    {
+      "id": "AC6",
+      "level": "MUST",
+      "description": "Glyph renderer for a quiet day emits a 24x24 monochrome bitmap encoded as the GS '*' raster image command, deterministic from the input seed (u64). Same seed -> identical bitmap bytes; different seeds -> different bitmaps (collision probability on a 100-seed proptest sample below 5%).",
+      "test": "tests/acceptance_ac6.rs"
+    },
+    {
+      "id": "AC7",
+      "level": "MUST",
+      "description": "Every strip embeds the ISO 8601 date (YYYY-MM-DD) from the summary in the printed bytes verbatim. `render --summary` with date='2026-05-23' produces output that contains the literal ASCII bytes '2026-05-23'.",
+      "test": "tests/acceptance_ac7.rs"
+    },
+    {
+      "id": "AC8",
+      "level": "SHOULD",
+      "description": "Stamp lookup: when content.stamp_id is provided for a special day, the renderer looks up the stamp by id in an embedded stamp table and emits its ESC/POS bytes. Unknown stamp_id -> error (exit code 4), not a panic.",
+      "test": "tests/acceptance_ac8.rs"
+    }
+  ],
+  "scope": [
+    "ESC/POS encoding (init, text, raster image, feed, cut) targeting 58mm thermal printers",
+    "Three day-type renderers: haiku-strip, glyph-strip, stamp-strip",
+    "Deterministic glyph generator (24x24 bitmap from u64 seed)",
+    "Day-type classifier from a structured DaySummary",
+    "CLI subcommands: render, classify, lint (validate a content payload against its day-type)"
+  ],
+  "non_goals": [
+    "Driving USB / serial / Bluetooth printer hardware (downstream wrapper)",
+    "Calling the Claude API to compose haiku (downstream caller supplies content)",
+    "Scheduling daily runs (cron/systemd live in the downstream wrapper)",
+    "Multiple strips per day (one render call = one strip)",
+    "Color output (thermal is monochrome by physics)",
+    "Cloud archive of strips (PRD section 6)",
+    "Year-end scroll binding ritual (physical, out of software scope)"
+  ],
+  "hard_constraints": {
+    "rust_edition": "2024",
+    "target_kind": "cli",
+    "deny_unsafe": true,
+    "max_deps": 6,
+    "msrv": "1.85",
+    "additional": {
+      "no_network": "true; renderer never touches the network — all content arrives via stdin/JSON file",
+      "no_clock": "true; the date comes from the summary JSON, never from system clock — preserves AC3 determinism"
+    }
+  },
+  "five_whys_trace": [
+    {
+      "why": 1,
+      "q": "Why do you want a Rust crate for the Daily Receipt?",
+      "a": "The art project needs a tactile daily strip, but the byte stream sent to the thermal printer is a finicky binary protocol (ESC/POS) where a single wrong byte produces a smear of garbage paper. That part deserves to be a tested Rust crate so I can trust it across years of unattended cron runs."
+    },
+    {
+      "why": 2,
+      "q": "Why isolate just the ESC/POS encoder and not the whole pipeline (cron + Claude API + USB)?",
+      "a": "Each of those other parts is either non-deterministic (Claude API), environment-specific (USB device path, systemd timer), or trivially shellable. Only the encoder + classifier + glyph renderer are pure functions over structured input — exactly the surface that benefits from autobuilder's iterate-and-prove loop. Mixing the others in would make every iteration depend on flaky network or absent hardware."
+    },
+    {
+      "why": 3,
+      "q": "Why is determinism (AC3) load-bearing, given each day's strip is a one-shot artifact?",
+      "a": "Two reasons. First: snapshot tests on byte output are the only way to keep a binary protocol honest without a physical printer in the loop. Second: when the printer mis-prints (jam, low battery, thermal head dirty), I need to be able to re-run the same day's render and get the same strip — otherwise the scroll has gaps where dates are missing or duplicated with different content."
+    },
+    {
+      "why": 4,
+      "q": "Why three day-types rather than one universal renderer?",
+      "a": "The PRD already names them (workday haiku, quiet-day glyph, special-day stamp) and the visual+content contract differs per type. A universal renderer would smuggle the day-type into per-call config, making the classifier untestable. Three explicit variants keep the type system honest."
+    },
+    {
+      "why": 5,
+      "q": "Why a CLI rather than a library that the larger 'daily ritual' daemon imports?",
+      "a": "The downstream wrapper is shell (cron piping to /dev/usb/lp0), not Rust. A CLI with file-in / file-out is the natural seam. The internal modules are still importable as a library by anyone who wants to, but the project's contract is the CLI."
+    }
+  ],
+  "ambiguities_resolved": [
+    {
+      "question": "PRD's open question 1: glyph visual vocabulary (hand-drawn primitives, pure generative noise, symbol-from-bigram).",
+      "resolution": "v1 picks deterministic generative bitmap from u64 seed — the simplest variant that satisfies AC6 falsifiably. Other vocabularies can be added behind a glyph-style flag in v2."
+    },
+    {
+      "question": "PRD's open question 3: year-end letter print.",
+      "resolution": "Out of scope for v1. v1 owns one strip per render call."
+    },
+    {
+      "question": "Cluster overlap with PRD-receipt.md and PRD-session-trace-receipt.md.",
+      "resolution": "Names overlap but artifacts are unrelated — daily-receipt produces a thermal-paper byte stream; the other two produce JSON gate receipts. No shared code, no shared dependency. Confirmed at intake."
+    },
+    {
+      "question": "Printer hardware: PRD lists Phomemo M02 / Star TSP100 / Epson TM-T20 (decide on arrival).",
+      "resolution": "All three speak ESC/POS-compatible dialects for the init + raster + cut subset used here. The encoder targets the lowest-common-denominator command subset; printer-specific quirks are downstream's problem."
+    }
+  ],
+  "created_at": "2026-05-23T09:10:15Z",
+  "intent_slug": "daily-receipt"
+}
