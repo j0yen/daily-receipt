@@ -41,6 +41,22 @@ required_commands = [
 ]
 
 [[lane]]
+id = "docs-and-config"
+description = "Project-level docs (PRD copy needed by ac-traceability) and gate-side config (extended-gates.toml). Added via intent_card_amendment_request.json 2026-05-23. No behavioral or AC impact; routed to a presence check."
+globs = ["PRD-*.md", "extended-gates.toml"]
+required_commands = [
+  "test -f Cargo.toml",
+]
+
+[[lane]]
+id = "agent-meta"
+description = "Agent-side metadata: amendment requests and the proof-lanes file itself when amended. Added via intent_card_amendment_request.json 2026-05-23. No runtime impact."
+globs = ["agent/intent_card_amendment_request.json", "agent/proof-lanes.toml"]
+required_commands = [
+  "test -f agent/intent-card.json",
+]
+
+[[lane]]
 id = "harness-readonly"
 description = "Harness files; should never change after scaffold"
 globs = [
