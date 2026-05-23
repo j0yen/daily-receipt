@@ -1,0 +1,7 @@
+# Extended-gates producer configuration.
+#
+# semver_expected_bump: greenfield 0.1.0 — first iteration introduces the
+# entire public API as a "minor" bump from the empty HEAD~1 surface. Patch
+# would require zero public-API additions, which is impossible on this
+# build.
+semver_expected_bump = "minor"
