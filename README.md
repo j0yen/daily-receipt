@@ -2,6 +2,24 @@
 
 > Produce a deterministic, falsifiable Rust core for the Daily Receipt art project: given a day's structured summary plus a chosen day-type (workday | quiet | special) plus the content payload supplied by upstream (a haiku triple, a glyph seed, or a stamp id), emit a byte-stable ESC/POS command stream for one ~3-8cm thermal strip.
 
+## Install
+
+### One-liner
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/j0yen/daily-receipt/main/install.sh | bash
+```
+
+### Manual
+
+```sh
+git clone --depth 1 https://github.com/j0yen/daily-receipt.git
+cd daily-receipt
+./install.sh
+```
+
+Installs the `daily-receipt` binary via `cargo install --path . --locked`. Requires `cargo` / `rustc 1.85+` and `git`. Built binary lands in `~/.cargo/bin/`.
+
 ## Why
 
 Produce a deterministic, falsifiable Rust core for the Daily Receipt art project: given a day's structured summary plus a chosen day-type (workday | quiet | special) plus the content payload supplied by upstream (a haiku triple, a glyph seed, or a stamp id), emit a byte-stable ESC/POS command stream for one ~3-8cm thermal strip. Physical printing, scheduling, and Claude-API haiku generation are EXPLICITLY out of scope; the testable core is the encoder + day-type classifier + glyph renderer that downstream cron/printer wrappers consume. This isolates the failure-prone surface (ESC/POS byte sequences, classifier heuristics, glyph determinism) from the unfalsifiable surface (does this haiku spark joy).
