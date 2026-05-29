@@ -19,6 +19,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod archive;
+
 use serde::{Deserialize, Serialize};
 
 /// The shape of the daily summary the renderer consumes.

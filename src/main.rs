@@ -1,10 +1,12 @@
 //! daily-receipt CLI.
 //!
-//! Three subcommands:
+//! Subcommands:
 //! * `render --summary <day.json> --content <content.json> --out <path>`
 //! * `classify --summary <day.json>` — prints the day-type on stdout.
 //! * `lint --summary <day.json> --content <content.json>` — validates
 //!   without rendering.
+//! * `archive <YYYY>` — produce an annual PDF scroll from all strips.
+//! * `archive ls` — list rendered scrolls.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -16,6 +18,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use daily_receipt::{Content, DaySummary, RenderError, classify, lint, render};
+use daily_receipt::archive::{ArchiveArgs, run_archive, run_archive_ls};
 
 mod cadence;
 
@@ -62,6 +65,26 @@ enum Cmd {
         #[arg(long)]
         content: PathBuf,
     },
+    /// Produce an annual PDF scroll from all strips (or list rendered scrolls).
+    Archive {
+        /// Four-digit year to archive, or "ls" to list existing scrolls.
+        year_or_ls: String,
+        /// Output PDF path. Default: scroll/<YYYY>.pdf.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Interleave monthly scan photographs (from $DAILY_RECEIPT_SCANS_DIR).
+        #[arg(long)]
+        include_scans: bool,
+        /// Also print a manifest JSON to stdout.
+        #[arg(long)]
+        json: bool,
+        /// Skip emitting a cadence `yearly` record after render.
+        #[arg(long)]
+        no_cadence_record: bool,
+        /// Override cadence yearly record summary.
+        #[arg(long)]
+        cadence_summary: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -84,7 +107,71 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => e.into_exit(),
         },
+        Cmd::Archive {
+            year_or_ls,
+            out,
+            include_scans,
+            json,
+            no_cadence_record,
+            cadence_summary,
+        } => {
+            if year_or_ls == "ls" {
+                let base_dir = default_base_dir();
+                match run_archive_ls(&base_dir) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        let mut stderr = std::io::stderr().lock();
+                        let _ = writeln!(stderr, "daily-receipt: archive ls: {e}");
+                        ExitCode::from(8)
+                    }
+                }
+            } else {
+                let year: i32 = match year_or_ls.parse() {
+                    Ok(y) => y,
+                    Err(_) => {
+                        let mut stderr = std::io::stderr().lock();
+                        let _ = writeln!(
+                            stderr,
+                            "daily-receipt: archive: expected a 4-digit year or 'ls', got '{year_or_ls}'"
+                        );
+                        return ExitCode::from(9);
+                    }
+                };
+                let base_dir = default_base_dir();
+                let args = ArchiveArgs {
+                    year,
+                    out,
+                    include_scans,
+                    json,
+                    no_cadence_record,
+                    cadence_summary,
+                };
+                match run_archive(&args, &base_dir) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        let mut stderr = std::io::stderr().lock();
+                        let _ = writeln!(stderr, "daily-receipt: archive: {e}");
+                        ExitCode::from(8)
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Resolve the base directory for the daily-receipt tool.
+/// Uses `DAILY_RECEIPT_BASE_DIR` env var or defaults to the binary's
+/// parent directory (which, when installed, is next to `scroll/` etc.).
+fn default_base_dir() -> std::path::PathBuf {
+    if let Ok(v) = std::env::var("DAILY_RECEIPT_BASE_DIR") {
+        return std::path::PathBuf::from(v);
+    }
+    // Fall back to the repo root by walking up from the binary location.
+    // In practice this is where the scrolls and archives live.
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
 }
 
 enum CliError {
