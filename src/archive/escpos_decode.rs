@@ -59,7 +59,9 @@ impl<'a> Decoder<'a> {
             return;
         }
         let text = std::mem::take(&mut self.line_buf);
-        let text_width = text.len() as u32 * CHAR_WIDTH;
+        let text_len_u32 =
+            u32::try_from(text.len()).unwrap_or(u32::MAX / CHAR_WIDTH);
+        let text_width = text_len_u32.saturating_mul(CHAR_WIDTH);
         let x_start = match self.align {
             1 => CANVAS_WIDTH.saturating_sub(text_width) / 2,
             2 => CANVAS_WIDTH.saturating_sub(text_width),
@@ -103,8 +105,8 @@ impl<'a> Decoder<'a> {
 
     /// Place a 24×24 GS raster bitmap at the current Y position.
     fn place_glyph(&mut self, nx: u8, ny: u8, data: &[u8]) {
-        let row_bytes = nx as u32;
-        let dot_rows = ny as u32 * 8;
+        let row_bytes = u32::from(nx);
+        let dot_rows = u32::from(ny) * 8;
         let pixel_width = row_bytes * 8;
 
         let x_start = match self.align {
@@ -115,7 +117,8 @@ impl<'a> Decoder<'a> {
 
         for row in 0..dot_rows {
             for byte_idx in 0..row_bytes {
-                let data_idx = (row * row_bytes + byte_idx) as usize;
+                let data_idx = usize::try_from(row * row_bytes + byte_idx)
+                    .unwrap_or(usize::MAX);
                 let byte = data.get(data_idx).copied().unwrap_or(0);
                 for bit in 0..8u32 {
                     let is_dark = (byte >> (7 - bit)) & 1 == 1;
@@ -148,22 +151,20 @@ impl<'a> Decoder<'a> {
     }
 }
 
-/// Decode an ESC/POS byte slice emitted by daily-receipt into a grayscale PNG.
+/// Decode an ESC/POS byte slice emitted by daily-receipt into a grayscale image.
 ///
-/// Returns `(image, cut_found)`. `cut_found` is `true` when the GS V B 0
-/// partial-cut command was encountered (normal strip terminator).
+/// Returns the decoded image. `cut_found` semantics: the GS V B 0 partial-cut
+/// command is consumed but not separately signalled; callers treat the returned
+/// image as a complete strip.
 ///
 /// Unknown ESC/POS bytes are skipped with a single stderr warning per unique
 /// unknown byte (AC5).
-///
-/// # Errors
-///
-/// Returns an error if encoding the PNG to bytes fails.
-pub fn decode(bytes: &[u8], warned: &mut HashSet<u8>) -> Result<GrayImage, image::ImageError> {
+#[allow(clippy::too_many_lines)] // dispatch table is intentionally wide
+pub fn decode(bytes: &[u8], warned: &mut HashSet<u8>) -> GrayImage {
     let mut dec = Decoder::new(warned);
     let mut i = 0;
     while i < bytes.len() {
-        let b = bytes[i];
+        let Some(&b) = bytes.get(i) else { break };
         match b {
             // LF — flush current line
             0x0A => {
@@ -211,13 +212,13 @@ pub fn decode(bytes: &[u8], warned: &mut HashSet<u8>) -> Result<GrayImage, image
                     Some(0x2A) => {
                         let nx = bytes.get(i + 2).copied().unwrap_or(0);
                         let ny = bytes.get(i + 3).copied().unwrap_or(0);
-                        let data_len = nx as usize * ny as usize * 8;
+                        let data_len = usize::from(nx) * usize::from(ny) * 8;
                         let data_start = i + 4;
                         let data_end = data_start + data_len;
                         let data = if data_end <= bytes.len() {
-                            &bytes[data_start..data_end]
+                            bytes.get(data_start..data_end).unwrap_or(&[])
                         } else {
-                            &bytes[data_start.min(bytes.len())..]
+                            bytes.get(data_start.min(bytes.len())..).unwrap_or(&[])
                         };
                         dec.flush_line();
                         dec.place_glyph(nx, ny, data);
@@ -246,7 +247,7 @@ pub fn decode(bytes: &[u8], warned: &mut HashSet<u8>) -> Result<GrayImage, image
             }
             // Printable ASCII
             0x20..=0x7E => {
-                dec.line_buf.push(b as char);
+                dec.line_buf.push(char::from(b));
                 i += 1;
             }
             // Everything else
@@ -260,7 +261,7 @@ pub fn decode(bytes: &[u8], warned: &mut HashSet<u8>) -> Result<GrayImage, image
     if !dec.line_buf.is_empty() {
         dec.flush_line();
     }
-    Ok(dec.finish())
+    dec.finish()
 }
 
 /// Encode a `GrayImage` to PNG bytes (in-memory).

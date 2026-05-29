@@ -20,17 +20,29 @@ const PAGE_H: f32 = 841.89;
 const MARGIN: f32 = 36.0;
 
 /// Day-cell dimensions.
+#[allow(clippy::float_arithmetic)]
 const CELL_W: f32 = (PAGE_W - 2.0 * MARGIN) / 7.0;
+#[allow(clippy::float_arithmetic)]
 const CELL_H: f32 = (PAGE_H - 120.0 - 2.0 * MARGIN) / 5.0;
 
 /// Strip thumbnail max width inside a cell.
+#[allow(clippy::float_arithmetic)]
 const THUMB_W: f32 = CELL_W - 4.0;
+#[allow(clippy::float_arithmetic)]
 const THUMB_H: f32 = CELL_H - 14.0;
+
+/// Default fallback page width in pixels for scan images.
+const PAGE_W_PX: u32 = 595;
+/// Default fallback page height in pixels for scan images.
+const PAGE_H_PX: u32 = 842;
 
 /// Pixel-based PNG source width expected from the decoder (reserved for
 /// future validation of incoming strip images).
 #[allow(dead_code)]
 const PNG_SOURCE_W: u32 = super::escpos_decode::CANVAS_WIDTH;
+
+/// Strip entry type alias to avoid repeating the tuple signature.
+pub type StripTuple = (String, Vec<u8>, u32, u32, String);
 
 /// One strip entry passed to the renderer.
 #[derive(Debug, Clone)]
@@ -81,6 +93,7 @@ pub struct ArchiveStats {
 ///
 /// Returns an error string if any internal allocation fails (practically
 /// unreachable with the current pdf-writer API, but we propagate).
+#[allow(clippy::too_many_lines)] // PDF layout requires a wide dispatch
 pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, String> {
     let mut alloc = Ref::new(1);
     let catalog_id = alloc.bump();
@@ -116,7 +129,8 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
     {
         let mut tree = pdf.pages(page_tree_id);
         tree.kids(page_ids.iter().copied());
-        tree.count(page_ids.len() as i32);
+        let count = i32::try_from(page_ids.len()).unwrap_or(i32::MAX);
+        tree.count(count);
     }
 
     // Pre-allocate font ref
@@ -137,7 +151,9 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
         let mut content = Content::new();
         content.begin_text();
         content.set_font(Name(b"F1"), 28.0);
-        content.next_line(MARGIN, PAGE_H - MARGIN - 30.0);
+        #[allow(clippy::float_arithmetic)]
+        let title_y = PAGE_H - MARGIN - 30.0;
+        content.next_line(MARGIN, title_y);
         let title = format!("Year {} — Daily Receipt Archive", stats.year);
         content.show(pdf_writer::Str(title.as_bytes()));
         content.set_font(Name(b"F1"), 14.0);
@@ -162,7 +178,7 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
 
     // --- Month pages ---
     for (mi, month) in months.iter().enumerate() {
-        let mpid = month_page_ids[mi];
+        let Some(&mpid) = month_page_ids.get(mi) else { continue };
         let mc_id = alloc.bump();
 
         // Collect image refs for this month's strips
@@ -204,14 +220,16 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
             let mut content = Content::new();
             content.begin_text();
             content.set_font(Name(b"F1"), 16.0);
-            content.next_line(MARGIN, PAGE_H - MARGIN - 20.0);
+            #[allow(clippy::float_arithmetic)]
+            let header_y = PAGE_H - MARGIN - 20.0;
+            content.next_line(MARGIN, header_y);
             content.show(pdf_writer::Str(header.as_bytes()));
 
             // Day-of-week header
             content.set_font(Name(b"F1"), 8.0);
             let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
             for (d, &day_name) in days.iter().enumerate() {
-                content.next_line(if d == 0 { 0.0 } else { CELL_W }, -(if d == 0 { 30.0 } else { 0.0 }));
+                content.next_line(if d == 0 { 0.0 } else { CELL_W }, if d == 0 { -30.0 } else { 0.0 });
                 content.show(pdf_writer::Str(day_name.as_bytes()));
             }
             content.end_text();
@@ -222,8 +240,10 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
             let days_in_month = days_in_month(month.year, month.month);
             for day in 1u8..=days_in_month {
                 let (col, row) = day_cell_position(month.year, month.month, day);
-                let x = MARGIN + col as f32 * CELL_W + 2.0;
-                let y = PAGE_H - MARGIN - 80.0 - (row as f32 + 1.0) * CELL_H + 2.0;
+                #[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+                let x = f32::from(col as u8).mul_add(CELL_W, MARGIN) + 2.0;
+                #[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+                let y = (f32::from(row as u8) + 1.0).mul_add(-CELL_H, PAGE_H - MARGIN - 80.0) + 2.0;
                 content.next_line(x, y);
                 content.show(pdf_writer::Str(day.to_string().as_bytes()));
             }
@@ -236,21 +256,29 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
             }
             for day in 1u8..=days_in_month {
                 if let Some(&idx) = strip_by_day.get(&day) {
-                    let strip = &month.strips[idx];
-                    let (col, row) = day_cell_position(month.year, month.month, day);
-                    let x = MARGIN + col as f32 * CELL_W + 2.0;
-                    let y = PAGE_H - MARGIN - 80.0 - (row as f32 + 1.0) * CELL_H + 10.0;
-                    // Scale to fit within THUMB_W × THUMB_H
-                    let aspect = strip.height as f32 / strip.width.max(1) as f32;
-                    let tw = THUMB_W;
-                    let th = (tw * aspect).min(THUMB_H);
-                    let key = format!("Im{mi}_{idx}");
-                    content.transform([tw, 0.0, 0.0, th, x, y]);
-                    content.x_object(Name(key.as_bytes()));
-                    // Reset transform (inverse)
-                    let inv_tw = 1.0 / tw.max(f32::EPSILON);
-                    let inv_th = 1.0 / th.max(f32::EPSILON);
-                    content.transform([inv_tw, 0.0, 0.0, inv_th, -x * inv_tw, -y * inv_th]);
+                    if let Some(strip) = month.strips.get(idx) {
+                        let (col, row) = day_cell_position(month.year, month.month, day);
+                        #[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+                        let x = f32::from(col as u8).mul_add(CELL_W, MARGIN) + 2.0;
+                        #[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+                        let y = (f32::from(row as u8) + 1.0).mul_add(-CELL_H, PAGE_H - MARGIN - 80.0) + 10.0;
+                        // Scale to fit within THUMB_W × THUMB_H
+                        #[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+                        let aspect = strip.height as f32 / strip.width.max(1) as f32;
+                        let tw = THUMB_W;
+                        #[allow(clippy::float_arithmetic)]
+                        let th = (tw * aspect).min(THUMB_H);
+                        let key = format!("Im{mi}_{idx}");
+                        content.transform([tw, 0.0, 0.0, th, x, y]);
+                        content.x_object(Name(key.as_bytes()));
+                        // Reset transform (inverse)
+                        #[allow(clippy::float_arithmetic)]
+                        let inv_tw = 1.0 / tw.max(f32::EPSILON);
+                        #[allow(clippy::float_arithmetic, clippy::similar_names)]
+                        let inv_th = 1.0 / th.max(f32::EPSILON);
+                        #[allow(clippy::float_arithmetic)]
+                        content.transform([inv_tw, 0.0, 0.0, inv_th, -x * inv_tw, -y * inv_th]);
+                    }
                 }
             }
 
@@ -267,11 +295,11 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
 
         // Write strip image XObjects
         for (img_id, strip) in &strip_img_allocs {
-            write_png_xobject(&mut pdf, *img_id, &strip.png_bytes, strip.width, strip.height, &mut alloc);
+            write_png_xobject(&mut pdf, *img_id, &strip.png_bytes, strip.width, strip.height);
         }
 
         // Scan page (if any)
-        if let (Some(spid), Some(scan_bytes)) = (scan_page_ids[mi], &month.scan_png) {
+        if let (Some(spid), Some(scan_bytes)) = (scan_page_ids.get(mi).copied().flatten(), &month.scan_png) {
             let sc_id = alloc.bump();
             let scan_img_ref = scan_img_id.unwrap_or_else(|| alloc.bump());
             {
@@ -292,8 +320,8 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
                 pdf.stream(sc_id, &content.finish());
             }
             // Parse scan PNG dimensions
-            let (sw, sh) = png_dimensions(scan_bytes).unwrap_or((PAGE_W as u32, PAGE_H as u32));
-            write_png_xobject(&mut pdf, scan_img_ref, scan_bytes, sw, sh, &mut alloc);
+            let (sw, sh) = png_dimensions(scan_bytes).unwrap_or((PAGE_W_PX, PAGE_H_PX));
+            write_png_xobject(&mut pdf, scan_img_ref, scan_bytes, sw, sh);
         }
     }
 
@@ -303,55 +331,60 @@ pub fn build_pdf(stats: &ArchiveStats, months: &[MonthData]) -> Result<Vec<u8>, 
     Ok(pdf.finish())
 }
 
-/// Write a grayscale PNG as a PDF image XObject.
+/// Write a grayscale PNG as a PDF image `XObject`.
 fn write_png_xobject(
     pdf: &mut Pdf,
     img_id: Ref,
     png_bytes: &[u8],
     width: u32,
     height: u32,
-    alloc: &mut Ref,
 ) {
     // For grayscale PNGs we embed raw pixel data decoded from the PNG.
     // pdf-writer needs raw samples; we use the `image` crate to decode.
     use image::ImageDecoder as _;
 
-    let raw_data: Vec<u8> = if let Ok(dec) =
-        image::codecs::png::PngDecoder::new(std::io::Cursor::new(png_bytes))
-    {
-        let total = dec.total_bytes() as usize;
-        let mut buf = vec![0u8; total];
-        if dec.read_image(&mut buf).is_ok() {
-            buf
-        } else {
-            vec![128u8; (width * height) as usize]
-        }
-    } else {
-        vec![128u8; (width * height) as usize]
-    };
-
-    let _ = alloc; // alloc not needed for XObject stream directly
+    let raw_data: Vec<u8> =
+        image::codecs::png::PngDecoder::new(std::io::Cursor::new(png_bytes)).map_or_else(
+            |_| {
+                let len = usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX);
+                vec![128u8; len]
+            },
+            |dec| {
+                let total =
+                    usize::try_from(dec.total_bytes()).unwrap_or(usize::MAX);
+                let mut buf = vec![0u8; total];
+                if dec.read_image(&mut buf).is_ok() {
+                    buf
+                } else {
+                    let len =
+                        usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX);
+                    vec![128u8; len]
+                }
+            },
+        );
 
     let mut image = pdf.image_xobject(img_id, &raw_data);
-    image.width(width as i32);
-    image.height(height as i32);
+    image.width(i32::try_from(width).unwrap_or(i32::MAX));
+    image.height(i32::try_from(height).unwrap_or(i32::MAX));
     image.color_space().device_gray();
     image.bits_per_component(8);
 }
 
 /// Parse width/height from PNG header bytes (bytes 16-23 of a valid PNG).
 /// Public so the archive module can call it without duplication.
+#[must_use]
 pub fn png_dims(png_bytes: &[u8]) -> Option<(u32, u32)> {
     png_dimensions(png_bytes)
 }
 
 /// Parse width/height from PNG header bytes (bytes 16-23 of a valid PNG).
-fn png_dimensions(png_bytes: &[u8]) -> Option<(u32, u32)> {
+const fn png_dimensions(png_bytes: &[u8]) -> Option<(u32, u32)> {
     // PNG signature is 8 bytes, then IHDR chunk: 4-byte length, 4-byte "IHDR",
     // then 4-byte width, 4-byte height.
     if png_bytes.len() < 24 {
         return None;
     }
+    // Safe: length checked above; indexing into fixed PNG header positions.
     let w = u32::from_be_bytes([png_bytes[16], png_bytes[17], png_bytes[18], png_bytes[19]]);
     let h = u32::from_be_bytes([png_bytes[20], png_bytes[21], png_bytes[22], png_bytes[23]]);
     Some((w, h))
@@ -359,35 +392,43 @@ fn png_dimensions(png_bytes: &[u8]) -> Option<(u32, u32)> {
 
 /// Return the (col, row) cell position (0-based) for a given day.
 /// col is weekday (0=Sun..6=Sat), row is week-of-month (0-4).
-fn day_cell_position(year: i32, month: u8, day: u8) -> (u32, u32) {
+const fn day_cell_position(year: i32, month: u8, day: u8) -> (u32, u32) {
     let weekday = weekday_of(year, month, 1);
+    // `as u32` safe: day is 1..=31, fits in u32
+    #[allow(clippy::as_conversions)]
     let offset = (day as u32).saturating_sub(1) + weekday;
     (offset % 7, offset / 7)
 }
 
 /// Compute day of week for the 1st of a month. 0=Sun, 6=Sat.
 /// Uses Tomohiko Sakamoto's algorithm.
-fn weekday_of(year: i32, month: u8, day: u8) -> u32 {
+const fn weekday_of(year: i32, month: u8, day: u8) -> u32 {
     let t: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let mut y = year;
+    // `as i32` safe: month is 1..=12, day is 1..=31, both fit in i32
+    #[allow(clippy::as_conversions)]
     let m = month as i32;
     if m < 3 {
         y -= 1;
     }
+    #[allow(clippy::as_conversions)]
     let d = day as i32;
+    // t[(m-1)] is safe: m is 1..=12, so m-1 is 0..=11, all valid indices.
+    #[allow(clippy::indexing_slicing)]
     let result = (y + y / 4 - y / 100 + y / 400 + t[(m - 1) as usize] + d) % 7;
-    // result can be negative for year=0 etc; guard it
-    result.rem_euclid(7) as u32
+    // rem_euclid on i32 and then cast is safe: result is in 0..=6
+    #[allow(clippy::cast_sign_loss, clippy::as_conversions)]
+    { result.rem_euclid(7) as u32 }
 }
 
 /// Number of days in a given month.
-fn days_in_month(year: i32, month: u8) -> u8 {
+const fn days_in_month(year: i32, month: u8) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
         2 => {
             if is_leap(year) { 29 } else { 28 }
         }
+        // 4 | 6 | 9 | 11 and any invalid month both return 30
         _ => 30,
     }
 }
@@ -398,7 +439,7 @@ const fn is_leap(year: i32) -> bool {
 }
 
 /// English month name.
-fn month_name(month: u8) -> &'static str {
+const fn month_name(month: u8) -> &'static str {
     match month {
         1 => "January",
         2 => "February",
@@ -417,7 +458,8 @@ fn month_name(month: u8) -> &'static str {
 }
 
 /// Return all 12 [`MonthData`] stubs for a year, populated with strips.
-pub fn build_months(year: i32, strips: &[(String, Vec<u8>, u32, u32, String)]) -> Vec<MonthData> {
+#[must_use]
+pub fn build_months(year: i32, strips: &[StripTuple]) -> Vec<MonthData> {
     let mut months: Vec<MonthData> = (1u8..=12)
         .map(|m| MonthData { month: m, year, strips: Vec::new(), scan_png: None })
         .collect();
@@ -428,24 +470,31 @@ pub fn build_months(year: i32, strips: &[(String, Vec<u8>, u32, u32, String)]) -
         if parts.len() < 3 {
             continue;
         }
-        let Ok(m) = parts[1].parse::<u8>() else { continue };
-        let Ok(d) = parts[2].parse::<u8>() else { continue };
-        if m < 1 || m > 12 {
+        let Some(m_str) = parts.get(1) else { continue };
+        let Some(d_str) = parts.get(2) else { continue };
+        let Ok(m) = m_str.parse::<u8>() else { continue };
+        let Ok(d) = d_str.parse::<u8>() else { continue };
+        if !(1..=12).contains(&m) {
             continue;
         }
-        let mi = (m - 1) as usize;
-        months[mi].strips.push(StripEntry {
-            day: d,
-            png_bytes: png_bytes.clone(),
-            width: *w,
-            height: *h,
-        });
+        let mi = usize::from(m - 1);
+        if let Some(month) = months.get_mut(mi) {
+            month.strips.push(StripEntry {
+                day: d,
+                png_bytes: png_bytes.clone(),
+                width: *w,
+                height: *h,
+            });
+        }
     }
     months
 }
 
 /// Inject scan PNGs into the months vector.
-pub fn inject_scans(months: &mut Vec<MonthData>, scans: &HashMap<u8, Vec<u8>>) {
+pub fn inject_scans<S: std::hash::BuildHasher>(
+    months: &mut [MonthData],
+    scans: &HashMap<u8, Vec<u8>, S>,
+) {
     for month in months.iter_mut() {
         if let Some(png) = scans.get(&month.month) {
             month.scan_png = Some(png.clone());

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 /// Returns a map from 1-based month number to raw PNG bytes.
 /// JPEGs and PNGs are both accepted; JPEGs are converted to PNG in-memory.
 /// Missing months or any I/O errors are skipped with a single warning.
+#[must_use]
 pub fn load_scans(scans_dir: &Path, year: i32) -> HashMap<u8, Vec<u8>> {
     let year_dir = scans_dir.join(year.to_string());
     let mut result: HashMap<u8, Vec<u8>> = HashMap::new();
@@ -61,8 +62,9 @@ fn warn(msg: &str) {
 /// Resolve the scans directory from env var or default.
 pub fn scans_dir() -> PathBuf {
     std::env::var("DAILY_RECEIPT_SCANS_DIR")
+        .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
             PathBuf::from(home).join("wintermute/daily-receipt/scans")
         })

@@ -53,16 +53,16 @@ struct CadenceDailyRecord {
 /// # Errors
 ///
 /// Returns an error string describing what went wrong.
+#[allow(clippy::too_many_lines)] // archive workflow is inherently multi-step
 pub fn run_archive(args: &ArchiveArgs, base_dir: &Path) -> Result<(), String> {
     // Resolve output path
-    let out_path = match &args.out {
-        Some(p) => p.clone(),
-        None => {
-            let scroll_dir = base_dir.join("scroll");
-            std::fs::create_dir_all(&scroll_dir)
-                .map_err(|e| format!("mkdir scroll: {e}"))?;
-            scroll_dir.join(format!("{}.pdf", args.year))
-        }
+    let out_path = if let Some(p) = &args.out {
+        p.clone()
+    } else {
+        let scroll_dir = base_dir.join("scroll");
+        std::fs::create_dir_all(&scroll_dir)
+            .map_err(|e| format!("mkdir scroll: {e}"))?;
+        scroll_dir.join(format!("{}.pdf", args.year))
     };
 
     // Collect strips from cadence records
@@ -73,7 +73,7 @@ pub fn run_archive(args: &ArchiveArgs, base_dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(&archive_dir)
         .map_err(|e| format!("mkdir archive: {e}"))?;
 
-    let mut strip_data: Vec<(String, Vec<u8>, u32, u32, String)> = Vec::new();
+    let mut strip_data: Vec<render_pdf::StripTuple> = Vec::new();
     let mut warned_bytes: HashSet<u8> = HashSet::new();
     let mut workday_count: usize = 0;
     let mut quiet_count: usize = 0;
@@ -84,10 +84,10 @@ pub fn run_archive(args: &ArchiveArgs, base_dir: &Path) -> Result<(), String> {
         let cache_path = archive_dir.join(format!("{}.png", record.date));
 
         // Load or (re-)generate PNG
-        let escpos_bytes = if !record.path.is_empty() {
-            std::fs::read(&record.path).unwrap_or_default()
-        } else {
+        let escpos_bytes = if record.path.is_empty() {
             Vec::new()
+        } else {
+            std::fs::read(&record.path).unwrap_or_default()
         };
 
         let use_cache = cache_path.exists() && !escpos_bytes.is_empty() && {
@@ -98,8 +98,7 @@ pub fn run_archive(args: &ArchiveArgs, base_dir: &Path) -> Result<(), String> {
         let png_bytes: Vec<u8> = if use_cache {
             std::fs::read(&cache_path).unwrap_or_default()
         } else if !escpos_bytes.is_empty() {
-            let img = escpos_decode::decode(&escpos_bytes, &mut warned_bytes)
-                .map_err(|e| format!("decode {}: {e}", record.date))?;
+            let img = escpos_decode::decode(&escpos_bytes, &mut warned_bytes);
             let png = escpos_decode::to_png_bytes(&img)
                 .map_err(|e| format!("png encode {}: {e}", record.date))?;
             // Write to cache (best effort)
@@ -111,13 +110,16 @@ pub fn run_archive(args: &ArchiveArgs, base_dir: &Path) -> Result<(), String> {
         };
 
         // Determine image dimensions
-        let (w, h) = escpos_decode::to_png_bytes(
-            &escpos_decode::decode(b"\x1b\x40hello\x0a\x1d\x56\x42\x00", &mut HashSet::new())
-                .unwrap_or_else(|_| image::GrayImage::new(384, 48)),
-        )
-        .ok()
-        .and_then(|b| render_pdf::png_dims(&b))
-        .unwrap_or((384, 48));
+        let (w, h) = {
+            let probe_img = escpos_decode::decode(
+                b"\x1b\x40hello\x0a\x1d\x56\x42\x00",
+                &mut HashSet::new(),
+            );
+            escpos_decode::to_png_bytes(&probe_img)
+                .ok()
+                .and_then(|b| render_pdf::png_dims(&b))
+                .unwrap_or((384, 48))
+        };
 
         let (pw, ph) = render_pdf::png_dims(&png_bytes).unwrap_or((w, h));
 
@@ -175,7 +177,7 @@ pub fn run_archive(args: &ArchiveArgs, base_dir: &Path) -> Result<(), String> {
             "special": stats.special_count,
         });
         let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(stdout, "{}", manifest);
+        let _ = writeln!(stdout, "{manifest}");
     }
 
     // Cadence yearly record
