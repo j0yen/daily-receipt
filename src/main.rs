@@ -17,6 +17,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use daily_receipt::{Content, DaySummary, RenderError, classify, lint, render};
 
+mod cadence;
+
 #[derive(Parser, Debug)]
 #[command(version, about = "Deterministic ESC/POS renderer for the Daily Receipt", long_about = None)]
 struct Cli {
@@ -37,6 +39,13 @@ enum Cmd {
         /// Output path for the ESC/POS byte stream.
         #[arg(long)]
         out: PathBuf,
+        /// Skip emitting a cadence `daily` record for this render.
+        #[arg(long)]
+        no_cadence_record: bool,
+        /// Override the cadence record summary (default: derived from
+        /// day-type plus repo/commit counts).
+        #[arg(long)]
+        cadence_summary: Option<String>,
     },
     /// Classify a day and print the day-type to stdout.
     Classify {
@@ -61,7 +70,9 @@ fn main() -> ExitCode {
             summary,
             content,
             out,
-        } => match run_render(&summary, &content, &out) {
+            no_cadence_record,
+            cadence_summary,
+        } => match run_render(&summary, &content, &out, no_cadence_record, cadence_summary) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => e.into_exit(),
         },
@@ -124,12 +135,25 @@ fn read_content(path: &PathBuf) -> Result<Content, CliError> {
         .map_err(|e| CliError::Json(format!("parse content {}", path.display()), e))
 }
 
-fn run_render(summary: &PathBuf, content: &PathBuf, out: &PathBuf) -> Result<(), CliError> {
+fn run_render(
+    summary: &PathBuf,
+    content: &PathBuf,
+    out: &PathBuf,
+    no_cadence_record: bool,
+    cadence_summary: Option<String>,
+) -> Result<(), CliError> {
     let summary = read_summary(summary)?;
     let content = read_content(content)?;
     let bytes = render(&summary, &content)?;
     fs::write(out, &bytes)
         .map_err(|e| CliError::Io(format!("write output {}", out.display()), e))?;
+    // Register the emit in the cadence substrate (side effect; never blocks
+    // the byte-stable render output). Opt out with `--no-cadence-record`.
+    if !no_cadence_record {
+        let day_type = classify(&summary);
+        let text = cadence_summary.unwrap_or_else(|| cadence::derive_summary(&summary, day_type));
+        cadence::record_emit(out, &text);
+    }
     Ok(())
 }
 
