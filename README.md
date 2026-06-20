@@ -1,16 +1,20 @@
 # daily-receipt
 
-> Produce a deterministic, falsifiable Rust core for the Daily Receipt art project: given a day's structured summary plus a chosen day-type (workday | quiet | special) plus the content payload supplied by upstream (a haiku triple, a glyph seed, or a stamp id), emit a byte-stable ESC/POS command stream for one ~3-8cm thermal strip.
+Turn one day of work into a byte-stable ESC/POS strip for a thermal printer — deterministic in, deterministic out.
+
+A day produces a structured summary: which repos you touched, how many commits, whether the date is marked. `daily-receipt` classifies that day into one of three types, takes the content someone upstream chose for it — a haiku, a glyph seed, or a stamp — and renders one ~3–8 cm thermal strip as raw ESC/POS bytes. Nothing more.
+
+## Why it exists
+
+Printing a daily artifact has two halves, and they fail in different ways. One half is taste: is this haiku any good? That can't be tested. The other half is mechanism: are these the right ESC/POS init bytes, is the cut command at the end, does the same input always produce the same output? That *can* be tested, and it's where the bugs live. This crate is the second half, kept separate on purpose. It never composes a haiku, never talks to a printer, never reads the clock. It maps `(summary, content) → bytes`, and the same pair always gives the same bytes — so the part of the system that can be verified, is.
 
 ## Install
-
-### One-liner
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/j0yen/daily-receipt/main/install.sh | bash
 ```
 
-### Manual
+Or from a clone:
 
 ```sh
 git clone --depth 1 https://github.com/j0yen/daily-receipt.git
@@ -18,53 +22,45 @@ cd daily-receipt
 ./install.sh
 ```
 
-Installs the `daily-receipt` binary via `cargo install --path . --locked`. Requires `cargo` / `rustc 1.85+` and `git`. Built binary lands in `~/.cargo/bin/`.
+`install.sh` runs `cargo install --path . --locked`; the binary lands in `~/.cargo/bin/`. Requires `cargo` / `rustc` 1.85+ and `git`.
 
-## Why
+## Quickstart
 
-Produce a deterministic, falsifiable Rust core for the Daily Receipt art project: given a day's structured summary plus a chosen day-type (workday | quiet | special) plus the content payload supplied by upstream (a haiku triple, a glyph seed, or a stamp id), emit a byte-stable ESC/POS command stream for one ~3-8cm thermal strip. Physical printing, scheduling, and Claude-API haiku generation are EXPLICITLY out of scope; the testable core is the encoder + day-type classifier + glyph renderer that downstream cron/printer wrappers consume. This isolates the failure-prone surface (ESC/POS byte sequences, classifier heuristics, glyph determinism) from the unfalsifiable surface (does this haiku spark joy).
-
-## Build
+Render a strip from a day-summary and its content payload:
 
 ```sh
-cargo build --release
+daily-receipt render --summary day.json --content content.json --out strip.escpos
 ```
 
-Produces `target/release/daily-receipt`. Symlink into `~/.local/bin/` if you want it on `$PATH`.
+`strip.escpos` is raw ESC/POS: it opens with the init sequence `1B 40`, embeds the summary's date verbatim as ASCII, and ends with the partial-cut command `1D 56 42 00`. To print, a one-line wrapper pipes the file at the printer (`cat strip.escpos > /dev/usb/lp0`); the core never touches the device.
 
-## Usage
+Other subcommands:
 
 ```sh
-daily-receipt --help
+daily-receipt classify --summary day.json              # prints: workday | quiet | special
+daily-receipt lint --summary day.json --content c.json # validate the pair without rendering
+daily-receipt archive 2026 --out scroll/2026.pdf       # bind the year's strips into one PDF scroll
+daily-receipt archive ls                               # list rendered scrolls
 ```
 
-## Audience
+## How it works
 
-the author on Arch Linux runs `daily-receipt render --summary day.json --content content.json --out strip.escpos`. Downstream a tiny shell wrapper pipes the file to /dev/usb/lp0 or saves it for the day. The Rust core never touches the printer; downstream wrappers and a future `daily-receipt-printer` crate own that.
+Three day-types, decided by the summary and nothing else:
 
-## Acceptance criteria
+| Day-type  | Condition                              | Content rendered         |
+|-----------|----------------------------------------|--------------------------|
+| `workday` | ≥3 distinct repos **or** ≥10 commits   | a three-line haiku       |
+| `special` | `special_stamp_id` is set              | a stamp                  |
+| `quiet`   | everything else                        | a generative 24×24 glyph |
 
-This project was scaffolded from a PRD via the `autobuilder` pipeline. The MUST-level acceptance criteria are:
+Determinism is the contract. There are no timestamps in the output, no RNG, no map-iteration order leaking through — glyphs come from a `u64` seed via splitmix64, so the same seed always yields the same bitmap. A mis-shaped content payload — a haiku that isn't exactly three lines of 1–40 visible chars — is an error with a distinct exit code, never a silent truncation or a panic.
 
-- **AC1**: `daily-receipt render --summary <day.json> --content <content.json> --out <path>` writes a non-empty ESC/POS byte stream to <path> for a workday haiku input and exits 0.
-- **AC2**: Output bytes begin with the ESC/POS init sequence ESC '@' (0x1B 0x40) and end with a feed-and-cut sequence (GS V 0x42 0x00 = 0x1D 0x56 0x42 0x00). This is the printer-handshake contract every strip must honor.
-- **AC3**: Rendering is deterministic: two `render` invocations with byte-identical summary+content JSON produce byte-identical ESC/POS output (no timestamps, no RNG, no map iteration order leaking in).
-- **AC4**: Day-type classifier `classify` returns `workday` when summary has >=3 distinct repos OR >=10 commits, `special` when summary.special_stamp_id is set, and `quiet` otherwise. Exhaustive on the three variants; no fourth bucket.
-- **AC5**: Haiku content must be exactly three lines, each line 1..=40 visible chars. `render` returns an error (exit code 3) when the content payload has the wrong shape for the day-type. No silent truncation, no panic.
-- **AC6**: Glyph renderer for a quiet day emits a 24x24 monochrome bitmap encoded as the GS '*' raster image command, deterministic from the input seed (u64). Same seed -> identical bitmap bytes; different seeds -> different bitmaps (collision prob...
-- **AC7**: Every strip embeds the ISO 8601 date (YYYY-MM-DD) from the summary in the printed bytes verbatim. `render --summary` with date='2026-05-23' produces output that contains the literal ASCII bytes '2026-05-23'.
+`render` also writes a `cadence` record as a side effect, so each emit is logged for the year-end archive; pass `--no-cadence-record` to skip it. That side effect never alters the byte-stable output. `archive <YYYY>` reads the year's strips back and binds them into a single PDF scroll, optionally interleaving monthly scan photos.
 
-Each AC has a matching integration test under `tests/acceptance_ac<n>.rs`.
+## Where it fits
 
-## Provenance
-
-Built via the [`autobuilder`](https://github.com/j0yen/autobuilder) pipeline (PRD intake -> intent-card -> scaffold -> iterate-and-prove). Originally consolidated as a subdir of the [`wintermute`](https://github.com/j0yen/wintermute) monorepo; this standalone repo is a fresh-init snapshot for easier consumption and distribution.
+This is the deterministic core of the daily-receipt family. Upstream, [`day-summarize`](https://github.com/j0yen/day-summarize) gathers the day's signal and [`day-haiku`](https://github.com/j0yen/day-haiku) composes the verse; [`day-stamps`](https://github.com/j0yen/day-stamps) supplies special-day stamps. Downstream, [`daily-receipt-printer`](https://github.com/j0yen/daily-receipt-printer) pushes the bytes to a real thermal printer, and [`daily-receipt-yearend-letter`](https://github.com/j0yen/daily-receipt-yearend-letter) closes the year. Built via the [`autobuilder`](https://github.com/j0yen/autobuilder) pipeline against the acceptance criteria in `agent/intent-card.json`.
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)), at your option.
